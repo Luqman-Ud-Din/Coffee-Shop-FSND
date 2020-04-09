@@ -1,86 +1,152 @@
 import json
-from flask import request, _request_ctx_stack
 from functools import wraps
-from jose import jwt
 from urllib.request import urlopen
 
+from flask import request
+from jose import jwt
 
-AUTH0_DOMAIN = 'udacity-fsnd.auth0.com'
+from ..constants import StatusCode, ErrorMessage
+
+# 'https://dev-fsnd-luqman.auth0.com/authorize?response_type=token&client_id=rNjPqKWAB92MleZ65442GuWg3vkJKBFN&redirect_uri=http://localhost:8080/login-results&audience=cafe'
+AUTH0_DOMAIN = 'dev-fsnd-luqman.auth0.com'
 ALGORITHMS = ['RS256']
-API_AUDIENCE = 'dev'
+API_AUDIENCE = 'cafe'
 
-## AuthError Exception
-'''
-AuthError Exception
-A standardized way to communicate auth failure modes
-'''
+
 class AuthError(Exception):
+    """A standardized way to communicate auth failure modes."""
+
     def __init__(self, error, status_code):
+        """
+        Init method of class.
+        :param error:
+        :param status_code:
+        """
         self.error = error
         self.status_code = status_code
 
 
-## Auth Header
+def raise_auth_error(error, status_code=StatusCode.HTTP_401_UNAUTHORIZED.value):
+    """
+    Raise auth error with given message.
+    :param error:
+    :param status_code:
+    :return:
+    """
+    raise AuthError({
+        'success': False,
+        'message': error,
+        'error': status_code
+    }, status_code)
 
-'''
-@TODO implement get_token_auth_header() method
-    it should attempt to get the header from the request
-        it should raise an AuthError if no header is present
-    it should attempt to split bearer and the token
-        it should raise an AuthError if the header is malformed
-    return the token part of the header
-'''
+
 def get_token_auth_header():
-   raise Exception('Not Implemented')
+    """
+    Get token from authorization header and raise error is header is incorrect.
+    :return:
+    """
 
-'''
-@TODO implement check_permissions(permission, payload) method
-    @INPUTS
-        permission: string permission (i.e. 'post:drink')
-        payload: decoded jwt payload
+    authorization = request.headers.get('Authorization')
+    if not authorization:
+        raise_auth_error(ErrorMessage.MISSING_AUTHORIZATION.value)
 
-    it should raise an AuthError if permissions are not included in the payload
-        !!NOTE check your RBAC settings in Auth0
-    it should raise an AuthError if the requested permission string is not in the payload permissions array
-    return true otherwise
-'''
+    authorization_parts = authorization.split(' ')
+    if authorization_parts[0].lower() != 'bearer':
+        raise_auth_error(ErrorMessage.MISSING_BEARER.value)
+
+    elif len(authorization_parts) == 1:
+        raise_auth_error(ErrorMessage.MISSING_TOKEN.value)
+
+    elif len(authorization_parts) > 2:
+        raise_auth_error(ErrorMessage.MISSING_BEARER_TOKEN.value)
+
+    token = authorization_parts[1]
+    return token
+
+
 def check_permissions(permission, payload):
-    raise Exception('Not Implemented')
+    """
+    Check permission against a payload.
+    :param permission:
+    :param payload:
+    :return:
+    """
+    if 'permissions' in payload and permission in payload['permissions']:
+        return True
 
-'''
-@TODO implement verify_decode_jwt(token) method
-    @INPUTS
-        token: a json web token (string)
+    raise_auth_error(StatusCode.HTTP_401_UNAUTHORIZED.value)
 
-    it should be an Auth0 token with key id (kid)
-    it should verify the token using Auth0 /.well-known/jwks.json
-    it should decode the payload from the token
-    it should validate the claims
-    return the decoded payload
-
-    !!NOTE urlopen has a common certificate error described here: https://stackoverflow.com/questions/50236117/scraping-ssl-certificate-verify-failed-error-for-http-en-wikipedia-org
-'''
 def verify_decode_jwt(token):
-    raise Exception('Not Implemented')
+    """
+    Verify if jwt can be decoded properly and is not tempered.
+    :param token:
+    :return:
+    """
+    unverified_header = jwt.get_unverified_header(token)
+    if 'kid' not in unverified_header:
+        raise_auth_error(ErrorMessage.AUTHORIZATION_MALFORMED.value)
 
-'''
-@TODO implement @requires_auth(permission) decorator method
-    @INPUTS
-        permission: string permission (i.e. 'post:drink')
+    json_url = urlopen(f'https://{AUTH0_DOMAIN}/.well-known/jwks.json')
+    jwks = json.loads(json_url.read())
+    rsa_key = {}
 
-    it should use the get_token_auth_header method to get the token
-    it should use the verify_decode_jwt method to decode the jwt
-    it should use the check_permissions method validate claims and check the requested permission
-    return the decorator which passes the decoded payload to the decorated method
-'''
+    for key in jwks['keys']:
+        if key['kid'] == unverified_header['kid']:
+            rsa_key = {
+                'kty': key['kty'],
+                'kid': key['kid'],
+                'use': key['use'],
+                'n': key['n'],
+                'e': key['e']
+            }
+
+    if not rsa_key:
+        raise_auth_error(ErrorMessage.INVALID_KEY.value, StatusCode.HTTP_401_UNAUTHORIZED.value)
+
+    try:
+        payload = jwt.decode(
+            token,
+            rsa_key,
+            algorithms=ALGORITHMS,
+            audience=API_AUDIENCE,
+            issuer='https://' + AUTH0_DOMAIN + '/'
+        )
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise_auth_error(ErrorMessage.TOKEN_EXPIRED.value)
+    except jwt.JWTClaimsError:
+        raise_auth_error(ErrorMessage.INVALID_CLAIMS.value)
+    except Exception:
+        raise_auth_error(ErrorMessage.UNABLE_TO_PARSE.value, StatusCode.HTTP_400_BAD_REQUEST.value)
+
+
 def requires_auth(permission=''):
-    def requires_auth_decorator(f):
-        @wraps(f)
+    """
+    Require Auth method.
+    :param permission:
+    :return:
+    """
+
+    def requires_auth_decorator(function):
+        """
+        Require Auth decorator.
+        :param function:
+        :return:
+        """
+
+        @wraps(function)
         def wrapper(*args, **kwargs):
+            """
+            Decorate wrapper method.
+            :param args:
+            :param kwargs:
+            :return:
+            """
             token = get_token_auth_header()
             payload = verify_decode_jwt(token)
             check_permissions(permission, payload)
-            return f(payload, *args, **kwargs)
+            return function(payload, *args, **kwargs)
 
         return wrapper
+
     return requires_auth_decorator
